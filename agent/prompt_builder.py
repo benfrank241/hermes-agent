@@ -210,7 +210,11 @@ PLATFORM_HINTS = {
         "delivered to the job's configured destination, so do not use send_message to "
         "send to that same target again. If you want the user to receive something in "
         "the scheduled destination, put it directly in your final response. Use "
-        "send_message only for additional or different targets."
+        "send_message only for additional or different targets. "
+        "If you have nothing new or noteworthy to report, respond with exactly "
+        "\"[SILENT]\" (optionally followed by a brief internal note). This suppresses "
+        "delivery to the user while still saving output locally for audit. Use this "
+        "for monitoring/polling jobs when there are no changes worth notifying about."
     ),
     "cli": (
         "You are a CLI AI Agent. Try not to use markdown but simple text "

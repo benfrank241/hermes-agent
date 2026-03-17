@@ -3,11 +3,17 @@
 import json
 import logging
 import os
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, patch, MagicMock, call
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, run_job
+from cron.scheduler import (
+    _resolve_origin,
+    _resolve_delivery_target,
+    _deliver_result,
+    run_job,
+    SILENT_MARKER,
+)
 
 
 class TestResolveOrigin:
@@ -449,3 +455,91 @@ class TestRunJobSkillBacked:
         assert "Instructions for blogwatcher." in prompt_arg
         assert "Instructions for find-nearby." in prompt_arg
         assert "Combine the results." in prompt_arg
+
+
+class TestSilentMarkerSuppression:
+    """Verify [SILENT] responses suppress delivery but still save output."""
+
+    def _make_job(self):
+        return {
+            "id": "monitor-job",
+            "name": "monitor",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+    def test_silent_marker_skips_delivery(self, caplog):
+        """Agent responding with [SILENT] should not trigger delivery."""
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT]", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            with caplog.at_level(logging.INFO, logger="cron.scheduler"):
+                tick(verbose=False)
+
+        deliver_mock.assert_not_called()
+        assert any(SILENT_MARKER in r.message for r in caplog.records)
+
+    def test_silent_with_note_skips_delivery(self):
+        """[SILENT] followed by a note should also suppress."""
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT] No changes detected", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+
+        deliver_mock.assert_not_called()
+
+    def test_silent_case_insensitive(self):
+        """[silent] and [Silent] should also suppress."""
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "[silent] nothing new", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+
+        deliver_mock.assert_not_called()
+
+    def test_normal_response_still_delivered(self):
+        """Non-silent responses should be delivered normally."""
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "Here are today's results...", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+
+        deliver_mock.assert_called_once()
+
+    def test_failed_job_still_delivered_even_if_silent_in_error(self):
+        """Failed jobs always get delivered — SILENT only works on success."""
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(False, "# output", "", "[SILENT] some error")), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+
+        deliver_mock.assert_called_once()
+
+    def test_output_still_saved_when_silent(self):
+        """Even when silent, the output doc should be saved locally."""
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# full output doc", "[SILENT]", None)), \
+             patch("cron.scheduler.save_job_output") as save_mock, \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            save_mock.return_value = "/tmp/out.md"
+            from cron.scheduler import tick
+            tick(verbose=False)
+
+        save_mock.assert_called_once_with("monitor-job", "# full output doc")
+        deliver_mock.assert_not_called()

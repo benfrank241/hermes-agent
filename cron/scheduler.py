@@ -37,6 +37,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output
 
+# Sentinel: if the agent's final response starts with this marker,
+# delivery is suppressed (output is still saved locally for audit).
+# The agent uses this when a monitoring/polling job has nothing new to report.
+SILENT_MARKER = "[SILENT]"
+
 # Resolve Hermes home directory (respects HERMES_HOME override)
 _hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 
@@ -482,7 +487,17 @@ def tick(verbose: bool = True) -> int:
 
                 # Deliver the final response to the origin/target chat
                 deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
-                if deliver_content:
+
+                # Silent suppression: if the agent signals nothing to report,
+                # skip delivery but still save the output locally for audit.
+                is_silent = (
+                    success
+                    and deliver_content
+                    and deliver_content.strip().upper().startswith(SILENT_MARKER)
+                )
+                if is_silent:
+                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                elif deliver_content:
                     try:
                         _deliver_result(job, deliver_content)
                     except Exception as de:

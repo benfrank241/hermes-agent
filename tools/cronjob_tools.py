@@ -342,6 +342,11 @@ calls are skipped to avoid duplicate cron deliveries. Put the primary
 user-facing content in the final response, and use send_message only for
 additional or different targets.
 
+Silent mode: For monitoring/polling jobs, the cron agent can respond with "[SILENT]"
+(optionally followed by a note) to suppress delivery when there's nothing new to report.
+Output is still saved locally for audit. Useful for jobs that check for changes and
+should only notify when something interesting happens.
+
 Important safety rule: cron-run sessions should not recursively schedule more cron jobs.""",
     "parameters": {
         "type": "object",
