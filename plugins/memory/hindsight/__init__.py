@@ -203,7 +203,7 @@ class HindsightMemoryProvider(MemoryProvider):
         try:
             cfg = _load_config()
             mode = cfg.get("mode", "cloud")
-            if mode == "local":
+            if mode in ("local", "local_embedded", "local_external"):
                 return True
             has_key = bool(cfg.get("apiKey") or os.environ.get("HINDSIGHT_API_KEY", ""))
             has_url = bool(cfg.get("api_url") or os.environ.get("HINDSIGHT_API_URL", ""))
@@ -229,13 +229,19 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def get_config_schema(self):
         return [
-            {"key": "mode", "description": "Cloud API or local embedded mode", "default": "cloud", "choices": ["cloud", "local"]},
-            {"key": "api_url", "description": "Hindsight API URL", "default": _DEFAULT_API_URL, "when": {"mode": "cloud"}},
+            {"key": "mode", "description": "Connection mode", "default": "cloud", "choices": ["cloud", "local_embedded", "local_external"]},
+            # Cloud mode
+            {"key": "api_url", "description": "Hindsight Cloud API URL", "default": _DEFAULT_API_URL, "when": {"mode": "cloud"}},
             {"key": "api_key", "description": "Hindsight Cloud API key", "secret": True, "env_var": "HINDSIGHT_API_KEY", "url": "https://ui.hindsight.vectorize.io", "when": {"mode": "cloud"}},
-            {"key": "llm_provider", "description": "LLM provider for local mode", "default": "openai", "choices": ["openai", "anthropic", "gemini", "groq", "minimax", "ollama", "lmstudio"], "when": {"mode": "local"}},
-            {"key": "llm_api_key", "description": "LLM API key for local Hindsight", "secret": True, "env_var": "HINDSIGHT_LLM_API_KEY", "when": {"mode": "local"}},
-            {"key": "llm_model", "description": "LLM model for local mode", "default": "gpt-4o-mini", "default_from": {"field": "llm_provider", "map": _PROVIDER_DEFAULT_MODELS}, "when": {"mode": "local"}},
-            {"key": "llm_base_url", "description": "Custom endpoint URL (e.g. http://192.168.1.10:8080/v1)", "default": "", "when": {"mode": "local"}},
+            # Local external mode — point at any running Hindsight instance
+            {"key": "api_url", "description": "Hindsight API URL", "default": _DEFAULT_LOCAL_URL, "when": {"mode": "local_external"}},
+            {"key": "api_key", "description": "API key (optional)", "secret": True, "env_var": "HINDSIGHT_API_KEY", "when": {"mode": "local_external"}},
+            # Local embedded mode — run the daemon locally
+            {"key": "llm_provider", "description": "LLM provider", "default": "openai", "choices": ["openai", "anthropic", "gemini", "groq", "minimax", "ollama", "lmstudio"], "when": {"mode": "local_embedded"}},
+            {"key": "llm_api_key", "description": "LLM API key", "secret": True, "env_var": "HINDSIGHT_LLM_API_KEY", "when": {"mode": "local_embedded"}},
+            {"key": "llm_model", "description": "LLM model", "default": "gpt-4o-mini", "default_from": {"field": "llm_provider", "map": _PROVIDER_DEFAULT_MODELS}, "when": {"mode": "local_embedded"}},
+            {"key": "llm_base_url", "description": "Custom endpoint URL (e.g. http://192.168.1.10:8080/v1)", "default": "", "when": {"mode": "local_embedded"}},
+            # Common
             {"key": "bank_id", "description": "Memory bank name", "default": "hermes"},
             {"key": "budget", "description": "Recall thoroughness", "default": "mid", "choices": ["low", "mid", "high"]},
             {"key": "memory_mode", "description": "Memory integration mode", "default": "hybrid", "choices": ["hybrid", "context", "tools"]},
@@ -245,7 +251,7 @@ class HindsightMemoryProvider(MemoryProvider):
     def _get_client(self):
         """Return the cached Hindsight client (created once, reused)."""
         if self._client is None:
-            if self._mode == "local":
+            if self._mode in ("local", "local_embedded"):
                 from hindsight import HindsightEmbedded
                 # Disable __del__ on the class to prevent "attached to a
                 # different loop" errors during GC — we handle cleanup in
@@ -271,8 +277,11 @@ class HindsightMemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         self._config = _load_config()
         self._mode = self._config.get("mode", "cloud")
-        self._api_key = self._config.get("apiKey") or os.environ.get("HINDSIGHT_API_KEY", "")
-        default_url = _DEFAULT_LOCAL_URL if self._mode == "local" else _DEFAULT_API_URL
+        # "local" is a legacy alias for "local_embedded"
+        if self._mode == "local":
+            self._mode = "local_embedded"
+        self._api_key = self._config.get("apiKey") or self._config.get("api_key") or os.environ.get("HINDSIGHT_API_KEY", "")
+        default_url = _DEFAULT_LOCAL_URL if self._mode in ("local_embedded", "local_external") else _DEFAULT_API_URL
         self._api_url = self._config.get("api_url") or os.environ.get("HINDSIGHT_API_URL", default_url)
         self._llm_base_url = self._config.get("llm_base_url", "")
 
@@ -293,7 +302,7 @@ class HindsightMemoryProvider(MemoryProvider):
         # For local mode, start the embedded daemon in the background so it
         # doesn't block the chat. Redirect stdout/stderr to a log file to
         # prevent rich startup output from spamming the terminal.
-        if self._mode == "local":
+        if self._mode == "local_embedded":
             def _start_daemon():
                 import traceback
                 from pathlib import Path
@@ -499,7 +508,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 t.join(timeout=5.0)
         if self._client is not None:
             try:
-                if self._mode == "local":
+                if self._mode == "local_embedded":
                     # Use the public close() API. The RuntimeError from
                     # aiohttp's "attached to a different loop" is expected
                     # and harmless — the daemon keeps running independently.
